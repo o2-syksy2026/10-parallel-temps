@@ -6,18 +6,25 @@ import java.util.OptionalDouble;
  * Computes the average temperature of one city on its own thread.
  *
  * <p>
- * The worker increments {@link #checked} once for every reading it consumes.
- * That volatile counter is the only state the main thread reads while this
- * worker is still running. The worker does not print and does not sleep. The
- * average is read after {@link #join()}.
+ * The worker publishes two volatile fields: {@link #checked} and
+ * {@link #runningAverage}. The main thread reads both while this worker is
+ * still running and draws from them. The worker does not print and does not
+ * sleep. After {@link #join()} the same average is stable.
  */
 public class TemperatureWorker extends Thread {
 
     /**
      * How many readings this worker has processed. The main thread reads this
-     * while the worker is running in order to draw the progress bar.
+     * while the worker is running in order to print the row and the percent.
      */
     public volatile int checked;
+
+    /**
+     * Average of the readings processed so far, in degrees Celsius. The main
+     * thread reads this while the worker is running in order to draw the bar.
+     * It stays {@code 0} until the first reading has been folded in.
+     */
+    public volatile double runningAverage;
 
     private final String city;
     private final TemperatureSource source;
@@ -26,7 +33,7 @@ public class TemperatureWorker extends Thread {
     /**
      * Creates a worker for one city.
      *
-     * @param city   the city name shown on the progress bar, for example
+     * @param city   the city name shown on the bar, for example
      *               {@code "Las Palmas"} or {@code "Helsinki"}
      * @param source the readings this worker consumes
      */
@@ -49,17 +56,14 @@ public class TemperatureWorker extends Thread {
      * Returns the average of the readings processed so far, in degrees Celsius.
      *
      * <p>
-     * Call this after {@link #join()}. The result is {@code 0} when no reading
-     * has been processed. The division uses {@link #checked} as the count.
+     * The result is the volatile {@link #runningAverage}. It is {@code 0} when
+     * no reading has been processed. The main thread may read it during the run;
+     * after {@link #join()} it no longer changes.
      *
      * @return the arithmetic mean of the processed readings
      */
     public double average() {
-        int processed = checked;
-        if (processed == 0) {
-            return 0;
-        }
-        return sum / processed;
+        return runningAverage;
     }
 
     @Override
@@ -70,7 +74,9 @@ public class TemperatureWorker extends Thread {
                 break;
             }
             sum += reading.getAsDouble();
-            checked++;
+            int seen = checked + 1;
+            runningAverage = sum / seen;
+            checked = seen;
         }
     }
 }

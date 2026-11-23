@@ -10,7 +10,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.HashSet;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -22,12 +24,16 @@ import org.junit.jupiter.api.Timeout;
 public class TemperatureWorkerTest {
 
     @Test
-    void workerIsAThreadWithAVolatileCheckedCounter() throws NoSuchFieldException {
+    void workerIsAThreadWithVolatileRunningState() throws NoSuchFieldException {
         assertEquals(Thread.class, TemperatureWorker.class.getSuperclass());
 
         Field checked = TemperatureWorker.class.getDeclaredField("checked");
         assertEquals(int.class, checked.getType());
         assertTrue(Modifier.isVolatile(checked.getModifiers()), "checked must be volatile");
+
+        Field runningAverage = TemperatureWorker.class.getDeclaredField("runningAverage");
+        assertEquals(double.class, runningAverage.getType());
+        assertTrue(Modifier.isVolatile(runningAverage.getModifiers()), "runningAverage must be volatile");
     }
 
     @Test
@@ -108,10 +114,40 @@ public class TemperatureWorkerTest {
 
     @Test
     void bundledAveragesAreInRangeAndHelsinkiHasTheWiderTolerance() throws Exception {
-        double[] lasPalmas = TemperatureData.readValues(TemperatureData.LAS_PALMAS);
-        double[] helsinki = TemperatureData.readValues(TemperatureData.HELSINKI);
-        assertEquals(366, lasPalmas.length);
-        assertEquals(366, helsinki.length);
+        double[] lasPalmasSeed = TemperatureData.readValues(TemperatureData.LAS_PALMAS);
+        double[] helsinkiSeed = TemperatureData.readValues(TemperatureData.HELSINKI);
+        assertEquals(366, lasPalmasSeed.length);
+        assertEquals(366, helsinkiSeed.length);
+        assertTrue(mean(lasPalmasSeed) >= 19.0 && mean(lasPalmasSeed) <= 24.0);
+        assertTrue(mean(helsinkiSeed) >= 3.0 && mean(helsinkiSeed) <= 9.0);
+
+        int rows = 12_000;
+        double[] lasPalmas = TemperatureData.stream(TemperatureData.LAS_PALMAS, rows);
+        double[] helsinki = TemperatureData.stream(TemperatureData.HELSINKI, rows);
+        assertAllValuesComeFromTheSeed(lasPalmas, lasPalmasSeed);
+        assertAllValuesComeFromTheSeed(helsinki, helsinkiSeed);
+
+        double[] lasPalmasMeans = runningMeans(lasPalmas);
+        double[] helsinkiMeans = runningMeans(helsinki);
+        double lasPalmasFinal = lasPalmasMeans[rows - 1];
+        double helsinkiFinal = helsinkiMeans[rows - 1];
+        int lasPalmasHigh = indexOfMax(lasPalmasMeans);
+        int lasPalmasLow = indexOfMin(lasPalmasMeans);
+        int helsinkiHigh = indexOfMax(helsinkiMeans);
+        int helsinkiLow = indexOfMin(helsinkiMeans);
+
+        assertTrue(helsinkiHigh < helsinkiLow, "Helsinki goes high before it goes low");
+        assertTrue(helsinkiMeans[helsinkiHigh] > helsinkiFinal + 8, "Helsinki swing is wide");
+        assertTrue(helsinkiMeans[helsinkiLow] < helsinkiFinal - 3, "Helsinki drops below its final average");
+        assertTrue(risesAbove(helsinkiMeans, helsinkiLow, helsinkiFinal + 0.3),
+                "Helsinki crosses back above the final average before it settles");
+
+        assertTrue(lasPalmasHigh < lasPalmasLow, "Las Palmas goes high before it goes low");
+        assertTrue(lasPalmasMeans[lasPalmasHigh] > lasPalmasFinal + 1.5);
+        assertTrue(lasPalmasMeans[lasPalmasLow] < lasPalmasFinal - 0.4);
+        double helsinkiAmp = helsinkiMeans[helsinkiHigh] - helsinkiMeans[helsinkiLow];
+        double lasPalmasAmp = lasPalmasMeans[lasPalmasHigh] - lasPalmasMeans[lasPalmasLow];
+        assertTrue(lasPalmasAmp * 2 < helsinkiAmp, "Las Palmas swings less than Helsinki");
 
         TemperatureWorker lasPalmasWorker = new TemperatureWorker("Las Palmas", new MemorySource(lasPalmas));
         TemperatureWorker helsinkiWorker = new TemperatureWorker("Helsinki", new MemorySource(helsinki));
@@ -120,26 +156,22 @@ public class TemperatureWorkerTest {
         lasPalmasWorker.join(2_000);
         helsinkiWorker.join(2_000);
 
-        assertEquals(lasPalmas.length, lasPalmasWorker.checked);
-        assertEquals(helsinki.length, helsinkiWorker.checked);
-
-        double lasPalmasMean = mean(lasPalmas);
-        double helsinkiMean = mean(helsinki);
-        assertEquals(lasPalmasMean, lasPalmasWorker.average(), 0.05, "Las Palmas tolerance is tight");
-        assertEquals(helsinkiMean, helsinkiWorker.average(), 0.5, "Helsinki tolerance is wider");
-
+        assertEquals(rows, lasPalmasWorker.checked);
+        assertEquals(rows, helsinkiWorker.checked);
+        assertEquals(lasPalmasFinal, lasPalmasWorker.average(), 0.05, "Las Palmas tolerance is tight");
+        assertEquals(helsinkiFinal, helsinkiWorker.average(), 0.5, "Helsinki tolerance is wider");
         assertTrue(lasPalmasWorker.average() >= 19.0 && lasPalmasWorker.average() <= 24.0,
                 "Las Palmas average " + lasPalmasWorker.average());
         assertTrue(helsinkiWorker.average() >= 3.0 && helsinkiWorker.average() <= 9.0,
                 "Helsinki average " + helsinkiWorker.average());
 
         TemperatureWorker earlyHelsinki = new TemperatureWorker("Helsinki",
-                new MemorySource(copy(helsinki, 55)));
+                new MemorySource(copy(helsinki, helsinkiLow + 1)));
         earlyHelsinki.start();
         earlyHelsinki.join(2_000);
-        assertEquals(55, earlyHelsinki.checked);
-        assertTrue(Math.abs(earlyHelsinki.average() - helsinkiWorker.average()) > 1.0,
-                "the running average must change as more Helsinki readings are processed");
+        assertEquals(helsinkiLow + 1, earlyHelsinki.checked);
+        assertTrue(earlyHelsinki.average() < helsinkiFinal - 3,
+                "the running average is still low part-way through the Helsinki series");
     }
 
     @Test
@@ -167,6 +199,55 @@ public class TemperatureWorkerTest {
             sum += value;
         }
         return sum / values.length;
+    }
+
+    private static double[] runningMeans(double[] values) {
+        double[] means = new double[values.length];
+        double sum = 0;
+        for (int i = 0; i < values.length; i++) {
+            sum += values[i];
+            means[i] = sum / (i + 1);
+        }
+        return means;
+    }
+
+    private static int indexOfMax(double[] values) {
+        int index = 0;
+        for (int i = 1; i < values.length; i++) {
+            if (values[i] > values[index]) {
+                index = i;
+            }
+        }
+        return index;
+    }
+
+    private static int indexOfMin(double[] values) {
+        int index = 0;
+        for (int i = 1; i < values.length; i++) {
+            if (values[i] < values[index]) {
+                index = i;
+            }
+        }
+        return index;
+    }
+
+    private static boolean risesAbove(double[] means, int after, double level) {
+        for (int i = after + 1; i < means.length; i++) {
+            if (means[i] > level) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void assertAllValuesComeFromTheSeed(double[] stream, double[] seed) {
+        Set<Double> allowed = new HashSet<>();
+        for (double value : seed) {
+            allowed.add(value);
+        }
+        for (double value : stream) {
+            assertTrue(allowed.contains(value), "stream value " + value + " is not in the seed file");
+        }
     }
 
     private static double[] copy(double[] values, int length) {
