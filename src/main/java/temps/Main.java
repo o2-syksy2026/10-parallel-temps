@@ -41,24 +41,25 @@ public class Main {
      * A total of {@code 0} is drawn as 0%. The average uses one decimal
      * and a dot as the decimal separator ({@link Locale#ROOT}).
      *
-     * @param firstCity     label of the first bar
-     * @param firstChecked  readings the first worker has processed
-     * @param firstTotal    readings the first worker will process
-     * @param firstAverage  average of the first city's processed readings, in
-     *                      degrees Celsius
-     * @param secondCity    label of the second bar
-     * @param secondChecked readings the second worker has processed
-     * @param secondTotal   readings the second worker will process
-     * @param secondAverage average of the second city's processed readings, in
-     *                      degrees Celsius
+     * @param firstCity      label of the first bar
+     * @param firstChecked   readings the first worker has processed
+     * @param firstTotal     readings the first worker will process
+     * @param firstAverage   average of the first city's processed readings, in
+     *                       degrees Celsius
+     * @param secondCity     label of the second bar
+     * @param secondChecked  readings the second worker has processed
+     * @param secondTotal    readings the second worker will process
+     * @param secondAverage  average of the second city's processed readings, in
+     *                       degrees Celsius
      * @return the two lines separated by {@code \n}, without a trailing newline
      *         and without terminal control codes
      */
     public static String showProgress(
             String firstCity, int firstChecked, int firstTotal, double firstAverage,
             String secondCity, int secondChecked, int secondTotal, double secondAverage) {
-        // TODO: build the two-line frame described in the readme and above.
-        return "";
+        return line(firstCity, firstChecked, firstTotal, firstAverage)
+                + "\n"
+                + line(secondCity, secondChecked, secondTotal, secondAverage);
     }
 
     /**
@@ -67,9 +68,9 @@ public class Main {
      *
      * <p>
      * {@code feedDelayMillis} is the pause between readings in the feeder (not
-     * in the worker). {@code 0} delivers every reading immediately, which is
-     * what the tests use. {@code redrawDelayMillis} is how long the main thread
-     * sleeps between frames.
+     * in the worker). {@code 0} makes the bundled files available immediately,
+     * which is what the tests use. {@code redrawDelayMillis} is how long the
+     * main thread sleeps between frames.
      *
      * @param redrawDelayMillis pause between frames, in milliseconds
      * @param feedDelayMillis   pause between readings handed to the workers, in
@@ -80,19 +81,29 @@ public class Main {
      */
     public static String runChart(long redrawDelayMillis, long feedDelayMillis)
             throws IOException, InterruptedException {
-        /*
-         * TODO: open data/las-palmas.csv and data/helsinki.csv with
-         * TemperatureData.open. Start one TemperatureWorker("Las Palmas", ...)
-         * and one TemperatureWorker("Helsinki", ...).
-         *
-         * While either worker is alive, print a frame from showProgress and call
-         * Thread.sleep(redrawDelayMillis). In that loop, read the workers'
-         * volatile checked counters. Workers must not print or sleep.
-         *
-         * When both workers have finished, call join() on both. Only after that,
-         * read average() and return the final frame from showProgress.
-         */
-        return "";
+        TemperatureSource lasPalmasSource = TemperatureData.open(TemperatureData.LAS_PALMAS, feedDelayMillis);
+        TemperatureSource helsinkiSource = TemperatureData.open(TemperatureData.HELSINKI, feedDelayMillis);
+
+        TemperatureWorker lasPalmas = new TemperatureWorker("Las Palmas", lasPalmasSource);
+        TemperatureWorker helsinki = new TemperatureWorker("Helsinki", helsinkiSource);
+        lasPalmas.start();
+        helsinki.start();
+
+        while (lasPalmas.isAlive() || helsinki.isAlive()) {
+            System.out.println(showProgress(
+                    lasPalmas.getCity(), lasPalmas.checked, lasPalmasSource.size(), lasPalmas.average(),
+                    helsinki.getCity(), helsinki.checked, helsinkiSource.size(), helsinki.average()));
+            Thread.sleep(redrawDelayMillis);
+        }
+
+        lasPalmas.join();
+        helsinki.join();
+
+        String finalFrame = showProgress(
+                lasPalmas.getCity(), lasPalmas.checked, lasPalmasSource.size(), lasPalmas.average(),
+                helsinki.getCity(), helsinki.checked, helsinkiSource.size(), helsinki.average());
+        System.out.println(finalFrame);
+        return finalFrame;
     }
 
     /**
@@ -105,5 +116,31 @@ public class Main {
      */
     public static void main(String[] args) throws IOException, InterruptedException {
         runChart(40, 15);
+    }
+
+    private static String line(String city, int checked, int total, double average) {
+        int filled = filledWidth(checked, total);
+        String bar = "#".repeat(filled) + "-".repeat(BAR_WIDTH - filled);
+        return String.format(Locale.ROOT, "%-10s | %s %3d %% %5.1f °C", city, bar, percent(checked, total), average);
+    }
+
+    private static int filledWidth(int checked, int total) {
+        if (total <= 0 || checked <= 0) {
+            return 0;
+        }
+        if (checked >= total) {
+            return BAR_WIDTH;
+        }
+        return (int) ((long) checked * BAR_WIDTH / total);
+    }
+
+    private static int percent(int checked, int total) {
+        if (total <= 0 || checked <= 0) {
+            return 0;
+        }
+        if (checked >= total) {
+            return 100;
+        }
+        return (int) ((long) checked * 100 / total);
     }
 }

@@ -55,16 +55,22 @@ public class TemperatureWorker extends Thread {
      * @return the arithmetic mean of the processed readings
      */
     public double average() {
-        // TODO: return sum / checked, or 0 when checked is 0.
-        return 0;
+        int processed = checked;
+        if (processed == 0) {
+            return 0;
+        }
+        return sum / processed;
     }
 
     @Override
     public void run() {
-        /*
-         * TODO: read source.next() until it returns an empty OptionalDouble.
-         * Add each reading to sum, then increment checked. Do not print and do
-         * not call Thread.sleep.
-         */
+        while (true) {
+            OptionalDouble reading = source.next();
+            if (reading.isEmpty()) {
+                break;
+            }
+            sum += reading.getAsDouble();
+            checked++;
+        }
     }
 }
